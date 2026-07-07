@@ -3,23 +3,22 @@
 // 固定代理目标（根路径及其他非 /proxy/ 路径会转发到此地址，保持向后兼容）
 const TARGET_URL = "https://lengfeng1360-newapi.hf.space";
 
+// ============================================================
+//  通用静态资源路径重写（与站点无关）
+// ============================================================
+
 /**
  * 重写HTML内容中的静态资源路径，将相对路径转换为通过代理服务访问的绝对路径
  * @param html HTML内容
  * @param proxyPrefix 代理前缀（如"/proxy/https://example.com"）
  * @returns 重写后的HTML内容
  */
-export async function rewriteHtmlStaticResources(html: string, proxyPrefix: string): Promise<string> {
-  // 解析代理前缀中的目标URL
+function rewriteStaticPaths(html: string, proxyPrefix: string): string {
   const targetUrlMatch = proxyPrefix.match(/^\/proxy\/(https?:\/\/[^\/]+)/);
   if (!targetUrlMatch) {
     return html;
   }
 
-  const targetOrigin = targetUrlMatch[1];
-  console.log(`Rewriting HTML with proxyPrefix: ${proxyPrefix}`);
-
-  // 处理不同类型的标签和属性
   const tagPatterns = [
     { tag: 'script', attr: 'src' },
     { tag: 'link', attr: 'href' },
@@ -34,131 +33,482 @@ export async function rewriteHtmlStaticResources(html: string, proxyPrefix: stri
     { tag: 'use', attr: 'xlink:href' },
     { tag: 'input', attr: 'src' },
     { tag: 'picture', attr: 'src' },
-    { tag: 'object', attr: 'data' }
+    { tag: 'object', attr: 'data' },
   ];
 
-  // 处理每种标签
   for (const { tag, attr } of tagPatterns) {
-    // 匹配形如 <tag ... attr="/..." ...> 的标签，attr 既可能是第一个属性也可能不是
-    // 使用 [^>]*? 非贪婪匹配属性间内容，attr 前的 \s+ 允许 0+ 个空白
-    // 注意：在 new RegExp 字符串中 \s 必须写为 \\s，否则会被解释为字面 's'
-    const regex = new RegExp(`<${tag}([^>]*?)\\s+${attr}=["'](\\/[^"']*?)["']`, 'gi');
+    // 匹配 attr 不是第一个属性的情况
+    const regex = new RegExp(
+      `<${tag}([^>]*?)\\s+${attr}=["'](\\/[^"']*?)["']`,
+      'gi',
+    );
     html = html.replace(regex, (match, attrs, path) => {
-      console.log(`Found ${tag} ${attr}: ${path}`);
-      // 跳过已带代理前缀、绝对路径、协议相对路径
-      if (path.startsWith('/proxy/') || path.startsWith('http://') || path.startsWith('https://') || path.startsWith('//')) {
-        console.log(`Skipping: ${path}`);
+      if (
+        path.startsWith('/proxy/') ||
+        path.startsWith('http://') ||
+        path.startsWith('https://') ||
+        path.startsWith('//')
+      ) {
         return match;
       }
-      const rewritten = `<${tag}${attrs} ${attr}="${proxyPrefix}${path}"`;
-      console.log(`Rewritten to: ${rewritten}`);
-      return rewritten;
+      return `<${tag}${attrs} ${attr}="${proxyPrefix}${path}"`;
     });
-    // 额外处理 attr 作为标签第一个属性的情况（如 <link href="/..."> ）
-    const firstAttrRegex = new RegExp(`<${tag}\\s+${attr}=["'](\\/[^"']*?)["']`, 'gi');
+
+    // 匹配 attr 作为第一个属性的情况
+    const firstAttrRegex = new RegExp(
+      `<${tag}\\s+${attr}=["'](\\/[^"']*?)["']`,
+      'gi',
+    );
     html = html.replace(firstAttrRegex, (match, path) => {
-      // 跳过已带代理前缀、绝对路径、协议相对路径
-      if (path.startsWith('/proxy/') || path.startsWith('http://') || path.startsWith('https://') || path.startsWith('//')) {
-        console.log(`Skipping first-attr: ${path}`);
+      if (
+        path.startsWith('/proxy/') ||
+        path.startsWith('http://') ||
+        path.startsWith('https://') ||
+        path.startsWith('//')
+      ) {
         return match;
       }
-      console.log(`Found first-attr ${tag} ${attr}: ${path}`);
-      const rewritten = `<${tag} ${attr}="${proxyPrefix}${path}"`;
-      console.log(`Rewritten first-attr to: ${rewritten}`);
-      return rewritten;
+      return `<${tag} ${attr}="${proxyPrefix}${path}"`;
     });
   }
 
-  // 处理CSS中的url()引用
-  html = html.replace(/url\(["']?(\/[^"')]+)["']?\)/gi, (match, path) => {
-    console.log(`Found CSS url: ${path}`);
-    // 跳过已带代理前缀、绝对路径、协议相对路径
-    if (path.startsWith('/proxy/') || path.startsWith('http://') || path.startsWith('https://') || path.startsWith('//')) {
-      console.log(`Skipping CSS path: ${path}`);
-      return match;
-    }
-    const rewritten = `url("${proxyPrefix}${path}")`;
-    console.log(`Rewritten CSS to: ${rewritten}`);
-    return rewritten;
-  });
-
-  // 处理data-main属性（AMD加载器）
-  html = html.replace(/data-main=["'](\/[^"']*?)["']/gi, (match, path) => {
-    console.log(`Found data-main: ${path}`);
-    // 跳过已带代理前缀、绝对路径、协议相对路径
-    if (path.startsWith('/proxy/') || path.startsWith('http://') || path.startsWith('https://') || path.startsWith('//')) {
-      console.log(`Skipping data-main path: ${path}`);
-      return match;
-    }
-    const rewritten = `data-main="${proxyPrefix}${path}"`;
-    console.log(`Rewritten data-main to: ${rewritten}`);
-    return rewritten;
-  });
-
-  // 处理meta refresh标签
-  html = html.replace(/<meta([^>]*?)\s+http-equiv=["']refresh["'][^>]*?url=["'](\/[^"']*?)["']/gi, (match, attrs, path) => {
-    console.log(`Found meta refresh: ${path}`);
-    // 跳过已带代理前缀、绝对路径、协议相对路径
-    if (path.startsWith('/proxy/') || path.startsWith('http://') || path.startsWith('https://') || path.startsWith('//')) {
-      console.log(`Skipping meta refresh path: ${path}`);
-      return match;
-    }
-    const rewritten = `<meta${attrs} url="${proxyPrefix}${path}"`;
-    console.log(`Rewritten meta refresh to: ${rewritten}`);
-    return rewritten;
-  });
-
-  // 处理内联样式中的URL
-  html = html.replace(/(style=["'][^"']*?)url\(["']?(\/[^"')]+)["']?\)/gi, (match, prefix, path) => {
-    console.log(`Found inline style url: ${path}`);
-    // 跳过已带代理前缀、绝对路径、协议相对路径
-    if (path.startsWith('/proxy/') || path.startsWith('http://') || path.startsWith('https://') || path.startsWith('//')) {
-      console.log(`Skipping inline style path: ${path}`);
-      return match;
-    }
-    const rewritten = `${prefix}url("${proxyPrefix}${path}")`;
-    console.log(`Rewritten inline style to: ${rewritten}`);
-    return rewritten;
-  });
-
-  // 处理base标签
-  html = html.replace(/<base([^>]*?)\s+href=["'](\/[^"']*?)["']/gi, (match, attrs, path) => {
-    console.log(`Found base href: ${path}`);
-    const rewritten = `<base${attrs} href="${proxyPrefix}"`;
-    console.log(`Rewritten base to: ${rewritten}`);
-    return rewritten;
-  });
-
-  // 关键：注入一个脚本，在应用代码运行前设置 OPENLIST_CONFIG.api 为代理前缀
-  // OpenList 的逻辑：let Pr="/"; if(config.api) Pr=config.api; if(Pr==="/") Pr=location.origin
-  // 设置 api 为代理前缀后，axios baseURL = Pr + "/api" = 代理前缀 + "/api"
-  // 这样所有 /api/... 请求都会走代理路径，而不是直接打到代理服务器本地
-  // 注意：不修改 base_path，因为它用于其他拼接逻辑（如路由）需要保留为 "/"
-  const configInjection = `<script>
-    window.__PROXY_PREFIX__ = ${JSON.stringify(proxyPrefix)};
-    if (window.OPENLIST_CONFIG) {
-      window.OPENLIST_CONFIG.api = ${JSON.stringify(proxyPrefix)};
-      window.__dynamic_base__ = ${JSON.stringify(proxyPrefix)};
-    }
-  </script>`;
-
-  // 在 OPENLIST_CONFIG 定义所在的整个 <script> 块结束之后注入配置覆盖脚本
-  // 注意：原始HTML中 OPENLIST_CONFIG = {...} 和 window.__dynamic_base__ = ... 在同一个 <script> 块内
-  // 如果插在 OPENLIST_CONFIG 对象之后，会切断 script 块导致后续代码变成裸露文本显示在页面上
-  // 所以必须匹配到 </script> 才插入。使用 [\s\S]*? 非贪婪匹配第一个 </script>
+  // CSS url() 引用
   html = html.replace(
-    /(<script>\s*window\.OPENLIST_CONFIG\s*=\s*\{[\s\S]*?<\/script>)/,
-    `$1\n${configInjection}`
+    /url\(["']?(\/[^"')]+)["']?\)/gi,
+    (match, path) => {
+      if (
+        path.startsWith('/proxy/') ||
+        path.startsWith('http://') ||
+        path.startsWith('https://') ||
+        path.startsWith('//')
+      ) {
+        return match;
+      }
+      return `url("${proxyPrefix}${path}")`;
+    },
   );
 
-  // 同时移除之前可能错误改写的 base_path（还原成 "/"）
+  // data-main 属性（AMD 加载器）
   html = html.replace(
-    /(base_path\s*:\s*)(["'])\/proxy\/https?:\/\/[^"']+\/\2/gi,
-    `$1$2/$2`
+    /data-main=["'](\/[^"']*?)["']/gi,
+    (match, path) => {
+      if (
+        path.startsWith('/proxy/') ||
+        path.startsWith('http://') ||
+        path.startsWith('https://') ||
+        path.startsWith('//')
+      ) {
+        return match;
+      }
+      return `data-main="${proxyPrefix}${path}"`;
+    },
+  );
+
+  // meta refresh 标签
+  html = html.replace(
+    /<meta([^>]*?)\s+http-equiv=["']refresh["'][^>]*?url=["'](\/[^"']*?)["']/gi,
+    (match, attrs, path) => {
+      if (
+        path.startsWith('/proxy/') ||
+        path.startsWith('http://') ||
+        path.startsWith('https://') ||
+        path.startsWith('//')
+      ) {
+        return match;
+      }
+      return `<meta${attrs} url="${proxyPrefix}${path}"`;
+    },
+  );
+
+  // 内联样式中的 URL
+  html = html.replace(
+    /(style=["'][^"']*?)url\(["']?(\/[^"')]+)["']?\)/gi,
+    (match, prefix, path) => {
+      if (
+        path.startsWith('/proxy/') ||
+        path.startsWith('http://') ||
+        path.startsWith('https://') ||
+        path.startsWith('//')
+      ) {
+        return match;
+      }
+      return `${prefix}url("${proxyPrefix}${path}")`;
+    },
+  );
+
+  // base 标签
+  html = html.replace(
+    /<base([^>]*?)\s+href=["'](\/[^"']*?)["']/gi,
+    (match, attrs) => {
+      return `<base${attrs} href="${proxyPrefix}"`;
+    },
   );
 
   return html;
 }
+
+// ============================================================
+//  自动适配检测器系统
+// ============================================================
+
+interface DetectionResult {
+  detected: boolean;
+  confidence: number;
+  strategy?: (html: string, proxyPrefix: string) => string;
+}
+
+type Detector = (html: string) => DetectionResult;
+
+/**
+ * 检测器 1：Next.js 应用
+ * 特征：<script id="__NEXT_DATA__"> 或 __next 相关静态资源路径
+ */
+const detectNextJS: Detector = (html: string) => {
+  const hasNextData = /<script\s+id="__NEXT_DATA__"/.test(html);
+  const hasNextStatic = /_next\/static/.test(html);
+
+  if (!hasNextData && !hasNextStatic) {
+    return { detected: false, confidence: 0 };
+  }
+
+  return {
+    detected: true,
+    confidence: hasNextData ? 0.95 : 0.5,
+    strategy: (html: string, proxyPrefix: string) => {
+      if (!hasNextData) return html;
+
+      return html.replace(
+        /(<script\s+id="__NEXT_DATA__"[^>]*>)([\s\S]*?)(<\/script>)/,
+        (match, openTag, jsonStr, closeTag) => {
+          try {
+            const data = JSON.parse(jsonStr);
+
+            // 修改 basePath
+            if (data.basePath === '' || data.basePath === '/') {
+              data.basePath = proxyPrefix;
+            }
+
+            // 递归修改 runtimeConfig 中的路径
+            const rewriteObj = (obj: Record<string, unknown>): void => {
+              for (const key of Object.keys(obj)) {
+                const val = obj[key];
+                if (typeof val === 'string' && (val === '' || val === '/') && /url|base|api|endpoint|path/i.test(key)) {
+                  obj[key] = proxyPrefix;
+                } else if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+                  rewriteObj(val as Record<string, unknown>);
+                }
+              }
+            };
+
+            if (data.runtimeConfig) {
+              rewriteObj(data.runtimeConfig as Record<string, unknown>);
+            }
+            if (data.props?.pageProps?.runtimeConfig) {
+              rewriteObj(data.props.pageProps.runtimeConfig as Record<string, unknown>);
+            }
+
+            return `${openTag}${JSON.stringify(data)}${closeTag}`;
+          } catch {
+            return match;
+          }
+        },
+      );
+    },
+  };
+};
+
+/**
+ * 检测器 2：Nuxt.js 应用
+ * 特征：window.__NUXT__
+ */
+const detectNuxt: Detector = (html: string) => {
+  const hasNuxt = /window\.__NUXT__\s*=/.test(html);
+  const hasNuxtConfig = /__NUXT__/.test(html) && /config/.test(html);
+
+  if (!hasNuxt) {
+    return { detected: false, confidence: 0 };
+  }
+
+  return {
+    detected: true,
+    confidence: hasNuxtConfig ? 0.9 : 0.6,
+    strategy: (html: string, proxyPrefix: string) => {
+      // Nuxt 2/3 的配置都在 window.__NUXT__ 中
+      // 注入覆盖脚本，在 __NUXT__ 赋值之后执行
+      const injection = `<script>
+(function(){
+  var n = window.__NUXT__;
+  if (!n) return;
+  function rewrite(o) {
+    if (!o || typeof o !== 'object') return;
+    Object.keys(o).forEach(function(k) {
+      if (typeof o[k] === 'string' && (o[k] === '' || o[k] === '/') && /url|base|api|endpoint|path/i.test(k)) {
+        o[k] = ${JSON.stringify(proxyPrefix)};
+      } else if (typeof o[k] === 'object' && o[k] !== null) {
+        rewrite(o[k]);
+      }
+    });
+  }
+  if (n.config) rewrite(n.config);
+  if (n.state) rewrite(n.state);
+})();
+</script>`;
+
+      return html.replace(
+        /(window\.__NUXT__\s*=\s*\{[\s\S]*?<\/script>)/,
+        `$1\n${injection}`,
+      );
+    },
+  };
+};
+
+/**
+ * 检测器 3：JSON 标签配置
+ * 特征：<script type="application/json" id="...config/...state/...data">
+ */
+const detectJsonTagConfig: Detector = (html: string) => {
+  // 收集所有匹配的 JSON 配置标签
+  const jsonTagRegex = /<script\s+type=["']application\/json["']\s+id=["']([^"']*)["']\s*>([\s\S]*?)<\/script>/gi;
+  const matches: Array<{ full: string; id: string; jsonStr: string }> = [];
+
+  for (const m of html.matchAll(jsonTagRegex)) {
+    const id = m[1];
+    const jsonStr = m[2];
+    // 通过 id 或内容判断是否像配置
+    if (/config|state|data|props|app/i.test(id) || /api|url|base|endpoint/i.test(jsonStr)) {
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (typeof parsed === 'object' && parsed !== null) {
+          matches.push({ full: m[0], id, jsonStr });
+        }
+      } catch {
+        /* 不是合法 JSON，跳过 */
+      }
+    }
+  }
+
+  if (matches.length === 0) {
+    return { detected: false, confidence: 0 };
+  }
+
+  return {
+    detected: true,
+    confidence: 0.8,
+    strategy: (html: string, proxyPrefix: string) => {
+      for (const { full, jsonStr } of matches) {
+        try {
+          const data = JSON.parse(jsonStr);
+          let changed = false;
+
+          const rewriteObj = (obj: Record<string, unknown>): void => {
+            for (const key of Object.keys(obj)) {
+              const val = obj[key];
+              if (typeof val === 'string' && (val === '' || val === '/') && /url|base|api|endpoint|path/i.test(key)) {
+                obj[key] = proxyPrefix;
+                changed = true;
+              } else if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+                rewriteObj(val as Record<string, unknown>);
+              }
+            }
+          };
+
+          rewriteObj(data as Record<string, unknown>);
+
+          if (changed) {
+            const newJson = JSON.stringify(data);
+            html = html.replace(full, full.replace(jsonStr, newJson));
+          }
+        } catch {
+          /* 解析失败，跳过 */
+        }
+      }
+      return html;
+    },
+  };
+};
+
+/**
+ * 检测器 4：window.XXX = { ... } 全局配置（覆盖面最广）
+ * 特征：<script>window.变量名 = { ... }</script>，且对象内含路径相关 key
+ *
+ * 能覆盖的场景：
+ *   - OpenList: window.OPENLIST_CONFIG = { api: "", base_path: "/" }
+ *   - 通用 Vue/React: window.__APP_CONFIG__ = { apiUrl: "", baseUrl: "/" }
+ *   - 各种自定义命名: window.SITE_CONFIG = { ... }
+ */
+const detectWindowConfig: Detector = (html: string) => {
+  // 匹配 <script>window.变量名 = { ... };</script> 完整块
+  // 使用 [\s\S]*? 非贪婪匹配，确保只取到第一个 </script>
+  const configBlockRegex = /<script>\s*(window\.(\w+)\s*=\s*(\{[\s\S]*?\}))\s*;?\s*<\/script>/g;
+
+  let bestMatch: {
+    full: string;
+    varName: string;
+    objContent: string;
+  } | null = null;
+  let bestScore = 0;
+
+  for (const m of html.matchAll(configBlockRegex)) {
+    const full = m[0];
+    const varName = m[2];
+    const objContent = m[3];
+
+    // 计算匹配分数：对象中路径相关 key 越多，分数越高
+    let score = 0;
+    const pathKeys = objContent.match(/\b(api[Uu]rl|base[Uu]rl|api[Bb]ase|base_path|basePath|endpoint|[a-zA-Z_]*[Uu]rl|[a-zA-Z_]*[Pp]ath|gateway)\s*:/g);
+    if (pathKeys) score = pathKeys.length;
+    // 对象不能太大（排除数据对象）
+    if (objContent.length > 5000) score *= 0.5;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = { full, varName, objContent };
+    }
+  }
+
+  if (!bestMatch || bestScore === 0) {
+    return { detected: false, confidence: 0 };
+  }
+
+  const { varName } = bestMatch;
+
+  return {
+    detected: true,
+    confidence: Math.min(0.5 + bestScore * 0.15, 0.95),
+    strategy: (html: string, proxyPrefix: string) => {
+      // 生成注入脚本，在配置对象创建后遍历并覆盖空路径
+      const injection = `<script>
+(function(){
+  var c = window.${varName};
+  if (!c || typeof c !== 'object') return;
+  Object.keys(c).forEach(function(k) {
+    var v = c[k];
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+      // 递归处理嵌套对象
+      Object.keys(v).forEach(function(nk) {
+        var nv = v[nk];
+        if (typeof nv === 'string' && (nv === '' || nv === '/') && /url|base|api|endpoint|path/i.test(nk)) {
+          v[nk] = ${JSON.stringify(proxyPrefix)};
+        }
+      });
+    }
+    if (typeof v === 'string' && (v === '' || v === '/') && /url|base|api|endpoint|path/i.test(k)) {
+      c[k] = ${JSON.stringify(proxyPrefix)};
+    }
+  });
+})();
+</script>`;
+
+      // 在配置 script 块之后注入
+      // 转义 varName 中的特殊字符用于正则
+      const escapedVarName = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return html.replace(
+        new RegExp(`(<script>\\s*window\\.${escapedVarName}\\s*=\\s*\\{[\\s\\S]*?<\\/script>)`),
+        `$1\n${injection}`,
+      );
+    },
+  };
+};
+
+/**
+ * 检测器 5：内联 JSON 配置变量（非 window. 前缀）
+ * 特征：<script>var config = {...}; 或 const settings = {...};
+ */
+const detectInlineConfig: Detector = (html: string) => {
+  // 匹配 var/let/const 变量名 = { ... }（非 window. 前缀，不与 detectWindowConfig 重复）
+  const inlineRegex = /<(script[^>]*)>\s*(?:var|let|const)\s+(\w+)\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/gi;
+
+  let bestMatch: { full: string; varName: string; objContent: string } | null = null;
+  let bestScore = 0;
+
+  for (const m of html.matchAll(inlineRegex)) {
+    // 排除 window.XXX 已经被 detectWindowConfig 处理的情况
+    if (/window\.\w+\s*=/.test(m[0])) continue;
+
+    const varName = m[2];
+    const objContent = m[3];
+
+    let score = 0;
+    const pathKeys = objContent.match(/\b(api[Uu]rl|base[Uu]rl|api[Bb]ase|base_path|basePath|endpoint|[a-zA-Z_]*[Uu]rl|[a-zA-Z_]*[Pp]ath|gateway)\s*:/g);
+    if (pathKeys) score = pathKeys.length;
+    if (objContent.length > 5000) score *= 0.5;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = { full: m[0], varName, objContent };
+    }
+  }
+
+  if (!bestMatch || bestScore === 0) {
+    return { detected: false, confidence: 0 };
+  }
+
+  return {
+    detected: true,
+    confidence: Math.min(0.4 + bestScore * 0.1, 0.75),
+    strategy: (html: string, proxyPrefix: string) => {
+      const { varName } = bestMatch!;
+      const injection = `<script>
+(function(){
+  try {
+    var c = ${varName};
+    if (!c || typeof c !== 'object') return;
+    Object.keys(c).forEach(function(k) {
+      var v = c[k];
+      if (typeof v === 'string' && (v === '' || v === '/') && /url|base|api|endpoint|path/i.test(k)) {
+        c[k] = ${JSON.stringify(proxyPrefix)};
+      }
+    });
+  } catch(e) {}
+})();
+</script>`;
+
+      const escapedVarName = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return html.replace(
+        new RegExp(`(</script>\\s*)(<script>\\s*(?:var|let|const)\\s+${escapedVarName}\\s*=\\s*\\{[\\s\\S]*?<\\/script>)`),
+        `$1${injection}\n$2`,
+      );
+    },
+  };
+};
+
+// 按优先级排列的检测器列表
+const detectors: Detector[] = [
+  detectNextJS,          // 高置信度，优先匹配
+  detectNuxt,            // Nuxt 专用
+  detectJsonTagConfig,   // JSON 标签配置
+  detectWindowConfig,    // window.XXX = {} 全局配置（最宽泛）
+  detectInlineConfig,    // 内联变量配置（兜底）
+];
+
+/**
+ * 自动适配 HTML 内容：先做通用路径重写，再根据检测到的站点特征做针对性处理
+ */
+function autoAdaptHtml(html: string, proxyPrefix: string): string {
+  // 1. 通用静态资源路径重写（所有站点都走）
+  let result = rewriteStaticPaths(html, proxyPrefix);
+
+  // 2. 运行所有检测器，找到最匹配的策略
+  let bestResult: DetectionResult | null = null;
+  for (const detect of detectors) {
+    const r = detect(result);
+    if (r.detected && r.strategy && r.confidence > (bestResult?.confidence ?? 0)) {
+      bestResult = r;
+    }
+  }
+
+  // 3. 执行最佳策略
+  if (bestResult?.strategy) {
+    console.log(`[Auto-Adapt] Detected site pattern, confidence: ${bestResult.confidence}`);
+    result = bestResult.strategy(result, proxyPrefix);
+  }
+
+  return result;
+}
+
+// ============================================================
+//  代理核心逻辑
+// ============================================================
 
 // 不应转发的 hop-by-hop 头部
 const HOP_BY_HOP_HEADERS = [
@@ -172,8 +522,7 @@ const HOP_BY_HOP_HEADERS = [
 ];
 
 /**
- * 通用代理转发函数：将请求转发到指定的目标 URL。
- * 保留流式传输、hop-by-hop 头过滤、手动重定向与错误处理。
+ * 通用代理转发函数
  */
 async function proxyTo(targetUrl: string, req: Request): Promise<Response> {
   try {
@@ -188,7 +537,6 @@ async function proxyTo(targetUrl: string, req: Request): Promise<Response> {
       });
     }
 
-    // 仅允许 http/https 协议，防止 file:// 等协议被滥用
     if (target.protocol !== "http:" && target.protocol !== "https:") {
       return new Response(`Unsupported protocol: ${target.protocol}`, {
         status: 400,
@@ -196,11 +544,7 @@ async function proxyTo(targetUrl: string, req: Request): Promise<Response> {
       });
     }
 
-    // 解析请求URL以获取代理前缀
-    const reqUrl = new URL(req.url);
-    const proxyPrefix = `/proxy/${target.origin}`;
-
-    // 2. 准备请求头，过滤掉 hop-by-hop 头和 host 头
+    // 2. 准备请求头
     const headers = new Headers();
     req.headers.forEach((value, key) => {
       if (!HOP_BY_HOP_HEADERS.includes(key.toLowerCase())) {
@@ -211,13 +555,13 @@ async function proxyTo(targetUrl: string, req: Request): Promise<Response> {
     // 3. 发起代理请求
     const response = await fetch(target.toString(), {
       method: req.method,
-      headers: headers,
-      body: req.body, // 直接传递请求体，支持流式传输
-      // @ts-ignore: Deno Deploy 支持 redirect 选项，但类型定义可能未更新
-      redirect: "manual", // 手动处理重定向，避免自动跟随导致循环或丢失头信息
+      headers,
+      body: req.body,
+      // @ts-ignore: Deno Deploy 支持 redirect 选项
+      redirect: "manual",
     });
 
-    // 4. 准备响应头，同样过滤掉 hop-by-hop 头
+    // 4. 准备响应头
     const responseHeaders = new Headers();
     response.headers.forEach((value, key) => {
       if (!HOP_BY_HOP_HEADERS.includes(key.toLowerCase())) {
@@ -225,19 +569,17 @@ async function proxyTo(targetUrl: string, req: Request): Promise<Response> {
       }
     });
 
-    // 5. 如果响应是HTML内容，重写其中的静态资源路径
+    // 5. HTML 内容自动适配
     let responseBody = response.body;
     const contentType = response.headers.get("content-type") || "";
     if (contentType.includes("text/html") && responseBody) {
-      // 读取HTML内容
       const htmlText = await new Response(responseBody).text();
-      console.log("Original HTML snippet:", htmlText.substring(0, 500));
+      console.log("Original HTML snippet:", htmlText.substring(0, 300));
 
-      // 解析请求URL以获取正确的代理前缀
+      // 计算代理前缀
       const reqUrl = new URL(req.url);
       let proxyPrefix = `/proxy/${target.origin}`;
 
-      // 检查请求是否来自动态代理
       if (reqUrl.pathname.startsWith("/proxy/")) {
         const parsed = parseProxyPath(reqUrl);
         if (parsed) {
@@ -246,19 +588,20 @@ async function proxyTo(targetUrl: string, req: Request): Promise<Response> {
       }
       console.log(`Using proxyPrefix: ${proxyPrefix}`);
 
-      // 重写静态资源路径
-      const rewrittenHtml = await rewriteHtmlStaticResources(htmlText, proxyPrefix);
-      console.log("Rewritten HTML snippet:", rewrittenHtml.substring(0, 500));
+      // 自动适配：通用重写 + 站点特征检测
+      const adaptedHtml = autoAdaptHtml(htmlText, proxyPrefix);
+      console.log("Adapted HTML snippet:", adaptedHtml.substring(0, 300));
 
-      // 创建新的响应体流
-      responseBody = new Response(rewrittenHtml).body;
+      responseBody = new Response(adaptedHtml).body;
       if (responseBody) {
-        // 更新Content-Length头
-        responseHeaders.set("content-length", new TextEncoder().encode(rewrittenHtml).length.toString());
+        responseHeaders.set(
+          "content-length",
+          new TextEncoder().encode(adaptedHtml).length.toString(),
+        );
       }
     }
 
-    // 6. 返回响应，直接传递响应体流
+    // 6. 返回响应
     return new Response(responseBody, {
       status: response.status,
       statusText: response.statusText,
@@ -266,7 +609,6 @@ async function proxyTo(targetUrl: string, req: Request): Promise<Response> {
     });
   } catch (error: unknown) {
     console.error("Proxy error:", error);
-    // 根据错误类型返回更合适的错误信息
     const status = error instanceof Deno.errors.NotFound ? 502 : 500;
     const message = error instanceof Error ? error.message : String(error);
     return new Response(`Proxy Error: ${message}`, {
@@ -277,11 +619,12 @@ async function proxyTo(targetUrl: string, req: Request): Promise<Response> {
 }
 
 /**
- * 解析代理路径，提取目标URL和资源路径
- * /proxy/https://example.com/assets/test.js -> { targetUrl: "https://example.com", resourcePath: "/assets/test.js" }
+ * 解析代理路径
+ * /proxy/https://example.com/assets/test.js -> { targetUrl, resourcePath }
  */
-function parseProxyPath(url: URL): { targetUrl: string; resourcePath: string } | null {
-  // pathname 形如 /proxy/https://example.com/assets/test.js
+function parseProxyPath(
+  url: URL,
+): { targetUrl: string; resourcePath: string } | null {
   const pathParts = url.pathname.split("/proxy/");
   if (pathParts.length < 2 || !pathParts[1]) {
     return null;
@@ -299,35 +642,37 @@ function parseProxyPath(url: URL): { targetUrl: string; resourcePath: string } |
 
   return {
     targetUrl: targetUrl + url.search,
-    resourcePath: resourcePath
+    resourcePath,
   };
 }
 
 /**
- * 解析 /proxy/ 前缀后的目标 URL。
- * /proxy/https://example.com/path?q=1 -> https://example.com/path?q=1
- * 与 parseProxyPath 不同：此函数用于简单的动态代理场景，
- * 将整段 URL（含 query）作为目标转发，不拆分为 targetUrl + resourcePath。
+ * 解析 /proxy/ 前缀后的目标 URL（含 query）
  */
 function parseProxyTarget(url: URL): string | null {
-  // pathname 形如 /proxy/https://example.com/path
-  // slice 后得到 https://example.com/path
   const rawTarget = decodeURIComponent(url.pathname.slice("/proxy/".length));
   if (!rawTarget) {
     return null;
   }
-  // 附加原始请求的查询参数
   return rawTarget + url.search;
 }
+
+// ============================================================
+//  路由处理
+// ============================================================
 
 export async function handler(req: Request): Promise<Response> {
   const url = new URL(req.url);
 
-  // 处理重写后的静态资源路径（如/proxy/https://example.com/assets/test.js）
-  if (url.pathname.includes("/proxy/https:") || url.pathname.includes("/proxy/http:")) {
+  // 处理重写后的静态资源路径
+  if (
+    url.pathname.includes("/proxy/https:") ||
+    url.pathname.includes("/proxy/http:")
+  ) {
     const parsed = parseProxyPath(url);
     if (parsed) {
-      const targetUrl = parsed.targetUrl.replace(/\/$/, "") + parsed.resourcePath;
+      const targetUrl = parsed.targetUrl.replace(/\/$/, "") +
+        parsed.resourcePath;
       return proxyTo(targetUrl, req);
     }
   }
@@ -347,17 +692,18 @@ export async function handler(req: Request): Promise<Response> {
     return proxyTo(targetUrl, req);
   }
 
-  // 固定代理：根路径及其他路径转发到 TARGET_URL（向后兼容）
+  // 固定代理：兜底转发到 TARGET_URL
   const targetUrl = new URL(TARGET_URL);
   targetUrl.pathname = url.pathname;
   targetUrl.search = url.search;
   return proxyTo(targetUrl.toString(), req);
 }
 
-// 启动服务器，仅在作为主模块运行时启动（避免测试时自动启动服务）
+// 启动服务器
 if (import.meta.main) {
   console.log("Reverse proxy running on Deno Deploy");
   console.log(`  - Fixed proxy target: ${TARGET_URL}`);
   console.log("  - Dynamic proxy: /proxy/<target-url>");
+  console.log("  - Auto-adapt: enabled (Next.js / Nuxt / OpenList / generic SPA)");
   Deno.serve({ port: 8003 }, handler);
 }
