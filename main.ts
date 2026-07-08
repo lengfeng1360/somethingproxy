@@ -13,7 +13,7 @@ const TARGET_URL = "https://lengfeng1360-newapi.hf.space";
  * @param proxyPrefix 代理前缀（如"/proxy/https://example.com"）
  * @returns 重写后的HTML内容
  */
-function rewriteStaticPaths(html: string, proxyPrefix: string): string {
+export function rewriteStaticPaths(html: string, proxyPrefix: string): string {
   const targetUrlMatch = proxyPrefix.match(/^\/proxy\/(https?:\/\/[^\/]+)/);
   if (!targetUrlMatch) {
     return html;
@@ -242,7 +242,7 @@ const detectNuxt: Detector = (html: string) => {
   function rewrite(o) {
     if (!o || typeof o !== 'object') return;
     Object.keys(o).forEach(function(k) {
-      if (typeof o[k] === 'string' && (o[k] === '' || o[k] === '/') && /url|base|api|endpoint|path/i.test(k)) {
+      if (typeof o[k] === 'string' && (o[k] === '' || o[k] === '/') && /url|base|api|endpoint|path/i.test(k) && !/^base_?path$/i.test(k)) {
         o[k] = ${JSON.stringify(proxyPrefix)};
       } else if (typeof o[k] === 'object' && o[k] !== null) {
         rewrite(o[k]);
@@ -303,7 +303,7 @@ const detectJsonTagConfig: Detector = (html: string) => {
           const rewriteObj = (obj: Record<string, unknown>): void => {
             for (const key of Object.keys(obj)) {
               const val = obj[key];
-              if (typeof val === 'string' && (val === '' || val === '/') && /url|base|api|endpoint|path/i.test(key)) {
+              if (typeof val === 'string' && (val === '' || val === '/') && /url|base|api|endpoint|path/i.test(key) && !/^base_?path$/i.test(key)) {
                 obj[key] = proxyPrefix;
                 changed = true;
               } else if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
@@ -376,25 +376,45 @@ const detectWindowConfig: Detector = (html: string) => {
     detected: true,
     confidence: Math.min(0.5 + bestScore * 0.15, 0.95),
     strategy: (html: string, proxyPrefix: string) => {
+      // 识别派生全局变量：window.<派生名> = [window.]CONFIG.<key> [|| 默认];
+      // 这些变量紧随配置对象定义被立即赋值，仅改 CONFIG 属性无法让它重读（时序问题）。
+      // 末尾会对这些派生变量强制重设为代理前缀。仅收变量名含 base|url|path 的，避免误伤。
+      const escapedVar = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const derivedRegex = new RegExp(
+        `window\\.(\\w+)\\s*=\\s*(?:window\\.)?${escapedVar}\\.[A-Za-z_$][\\w$]*(?:\\s*\\|\\|[^;]+)?\\s*;`,
+        'g',
+      );
+      const derivedNames: string[] = [];
+      for (const m of html.matchAll(derivedRegex)) {
+        if (/base|url|path/i.test(m[1])) derivedNames.push(m[1]);
+      }
+      const uniqueDerived = [...new Set(derivedNames)];
+
       // 生成注入脚本，在配置对象创建后遍历并覆盖空路径
       const injection = `<script>
 (function(){
   var c = window.${varName};
-  if (!c || typeof c !== 'object') return;
-  Object.keys(c).forEach(function(k) {
-    var v = c[k];
-    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
-      // 递归处理嵌套对象
-      Object.keys(v).forEach(function(nk) {
-        var nv = v[nk];
-        if (typeof nv === 'string' && (nv === '' || nv === '/') && /url|base|api|endpoint|path/i.test(nk)) {
-          v[nk] = ${JSON.stringify(proxyPrefix)};
-        }
-      });
-    }
-    if (typeof v === 'string' && (v === '' || v === '/') && /url|base|api|endpoint|path/i.test(k)) {
-      c[k] = ${JSON.stringify(proxyPrefix)};
-    }
+  if (c && typeof c === 'object') {
+    Object.keys(c).forEach(function(k) {
+      var v = c[k];
+      if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+        // 递归处理嵌套对象
+        Object.keys(v).forEach(function(nk) {
+          var nv = v[nk];
+          if (typeof nv === 'string' && (nv === '' || nv === '/') && /url|base|api|endpoint|path/i.test(nk) && !/^base_?path$/i.test(nk)) {
+            v[nk] = ${JSON.stringify(proxyPrefix)};
+          }
+        });
+      }
+      if (typeof v === 'string' && (v === '' || v === '/') && /url|base|api|endpoint|path/i.test(k) && !/^base_?path$/i.test(k)) {
+        c[k] = ${JSON.stringify(proxyPrefix)};
+      }
+    });
+  }
+  // 强制重设派生全局变量，绕过其先于本脚本赋值完成的时序问题
+  var pp = ${JSON.stringify(proxyPrefix)};
+  ${JSON.stringify(uniqueDerived)}.forEach(function(dn) {
+    try { window[dn] = pp; } catch (e) {}
   });
 })();
 </script>`;
@@ -455,7 +475,7 @@ const detectInlineConfig: Detector = (html: string) => {
     if (!c || typeof c !== 'object') return;
     Object.keys(c).forEach(function(k) {
       var v = c[k];
-      if (typeof v === 'string' && (v === '' || v === '/') && /url|base|api|endpoint|path/i.test(k)) {
+      if (typeof v === 'string' && (v === '' || v === '/') && /url|base|api|endpoint|path/i.test(k) && !/^base_?path$/i.test(k)) {
         c[k] = ${JSON.stringify(proxyPrefix)};
       }
     });
